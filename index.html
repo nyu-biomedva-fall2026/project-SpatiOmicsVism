@@ -9,7 +9,7 @@
 <body>
 <header class="top">
   <div class="brand">
-    <strong>Macaque Hippocampus Explorer</strong>
+    <strong>Macaque Hippocampus Explorer <span class="ver" title="Version 0.1.0, November 17, 2026">v0.1.0</span></strong>
     <span class="muted">Fei et al. 2026 · one macaque · Stereo-seq</span>
   </div>
   <nav class="steps" id="steps" aria-label="Guided steps"></nav>
@@ -101,6 +101,11 @@
           <button id="t-lens" data-help="lens">Neighbour lens</button>
           <button id="t-links" data-help="links">Nearest-cell links</button>
         </span>
+      </div>
+      <div class="mvbar" id="mv-ubar">
+        <span>UMAP of <span class="info" data-help="uscope">ⓘ</span></span>
+        <span class="seg" id="mv-uscope"><button data-u="dg">DG only</button><button data-u="regions">Selected regions</button><button data-u="all">All regions</button></span>
+        <span class="toggles chips" id="mv-regions"></span>
       </div>
       <div class="legend mvleg" id="mv-legend"></div>
       <div class="mv" id="mv">
