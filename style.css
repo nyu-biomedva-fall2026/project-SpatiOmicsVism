@@ -75,6 +75,7 @@ header.top {
 .brand { display: flex; flex-direction: column; line-height: 1.2; }
 .brand strong { font-size: 14px; }
 .brand .muted { font-size: 11.5px; }
+.brand .ver { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
 
 .tabs button {
   border: 0; background: none; padding: 7px 12px; border-radius: 7px; cursor: pointer; color: var(--text-2);
@@ -274,6 +275,12 @@ details.settings dl { margin-top: 6px; }
 .toggles2 button { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 2px 10px; cursor: pointer; font-size: 12px; }
 .toggles2 button.on { background: var(--accent); color: var(--surface); border-color: var(--accent); font-weight: 600; }
 .mvleg { padding: 0 12px; min-height: 18px; }
+.mvbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 12px 4px; font-size: 12px; color: var(--text-2); }
+.mvbar .seg { margin-left: 0; }
+.mvbar .chips { margin: 0; }
+.mvbar .chip { font-size: 11.5px; padding: 1px 7px; }
+.mvbar .chip .sw { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.mvbar .chip:not(.on) .sw { opacity: 0.35; }
 .mv { flex: 1; min-height: 0; display: grid; gap: 8px; padding: 2px 10px 6px; }
 .mv[data-view="section"] { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); }
 .mv[data-view="compare"] { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); }
@@ -323,6 +330,12 @@ details.settings dl { margin-top: 6px; }
 .linkbtn { border: 0; background: none; color: var(--accent); cursor: pointer; font-size: 11.5px; text-transform: none; letter-spacing: 0; padding: 0; }
 .ev-caption { padding: 0 12px; font-size: 12px; color: var(--text-2); line-height: 1.35; }
 .hover-tools { opacity: 0; transition: opacity .15s; }
+/* panel headers: hover tools overlay the right end instead of taking width from the subtitle */
+.mv-h { position: relative; }
+.mv-h .tools.hover-tools { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: var(--surface); padding-left: 6px; }
+/* three narrow panels: subtitles may wrap; equal header heights keep the three plots aligned */
+.mv[data-view="compare"] .mv-h { min-height: 40px; align-items: flex-start; flex-wrap: wrap; row-gap: 0; }
+.mv[data-view="compare"] .mv-h .sub { white-space: normal; line-height: 1.25; }
 .mv-cell:hover .hover-tools, #p-stack:hover .hover-tools, .hover-tools:focus-within { opacity: 1; }
 .welcome { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: rgba(0, 0, 0, .35); }
 .welcome[hidden] { display: none; }
