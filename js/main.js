@@ -33,7 +33,7 @@ function renderDepthStrip() {
 function renderRegions() {
   const host = document.getElementById('region-list');
   host.innerHTML = REG.map((r, k) => `<label><input type="checkbox" data-r="${k}" ${S.regions.has(k) ? 'checked' : ''}><span class="sw" style="background:${regionColor(k)}"></span>${r}</label>`).join('');
-  host.querySelectorAll('input').forEach(inp => inp.onchange = () => { const rs = new Set(S.regions); inp.checked ? rs.add(+inp.dataset.r) : rs.delete(+inp.dataset.r); update({ regions: rs }); });
+  host.querySelectorAll('input').forEach(inp => inp.onchange = () => { const rs = new Set(S.regions); inp.checked ? rs.add(+inp.dataset.r) : rs.delete(+inp.dataset.r); update(S.uscope === 'regions' ? regionsPatch(rs) : { regions: rs }); });
 }
 function renderGeneChips() {
   const host = document.getElementById('gene-chips');

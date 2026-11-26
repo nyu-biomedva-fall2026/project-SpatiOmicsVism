@@ -187,9 +187,13 @@ const Evidence = (() => {
         de.slice(0, 10).map(r => `<tr class="${inPanel(r.gene) ? 'click' : ''}" data-g="${r.gene}" title="adj. p = ${d3.format('.1e')(r.padj)}"><td><b>${r.gene}</b></td><td class="num">${fmt.f2(r.logfc)}</td><td class="num">${fmt.pct(r.pct_in)}</td><td class="num">${fmt.pct(r.pct_out)}</td></tr>`).join('') + '</tbody></table>';
       ups = Object.keys(st).filter(g => st[g][c].z > 0.5);
     } else {
-      const rest = Array.from(dgCells()).filter(i => !isSel(i));
-      const rank = [...GENE.keys()].map(g => { const v = GENE.get(g); return { g, d: d3.mean(idx, i => v[i]) - d3.mean(rest, i => v[i]) }; }).sort((a, b) => b.d - a.d).slice(0, 8);
-      table = `<div class="lbl"><b>Loaded panel genes ranked</b> · Δ mean log1p vs other DG cells</div><table class="t"><tbody>${rank.map(r => `<tr class="click" data-g="${r.g}"><td><b>${r.g}</b></td><td class="num">${d3.format('+.2f')(r.d)}</td></tr>`).join('')}</tbody></table>`;
+      // baseline: the DG cells outside the selection; when the selection holds every DG cell, the rest of the section
+      let rest = Array.from(dgCells()).filter(i => !isSel(i)), restName = 'other DG cells';
+      if (!rest.length) { rest = Array.from(cellsOf(si, 'qc')).filter(i => !isSel(i)); restName = 'the rest of the section'; }
+      const rank = rest.length ? [...GENE.keys()].map(g => { const v = GENE.get(g); return { g, d: d3.mean(idx, i => v[i]) - d3.mean(rest, i => v[i]) }; }).sort((a, b) => b.d - a.d).slice(0, 8) : [];
+      table = rest.length
+        ? `<div class="lbl"><b>Loaded panel genes ranked</b> · Δ mean log1p vs ${restName}</div><table class="t"><tbody>${rank.map(r => `<tr class="click" data-g="${r.g}"><td><b>${r.g}</b></td><td class="num">${d3.format('+.2f')(r.d)}</td></tr>`).join('')}</tbody></table>`
+        : `<div class="lbl"><b>Loaded panel genes ranked</b></div><p class="note">The selection holds every cell of the section, so there is nothing to compare it with.</p>`;
       ups = M.nsc_markers.filter(g => GENE.has(g) && d3.mean(idx, i => GENE.get(g)[i]) > 1.5 * d3.mean(dgCells(), i => GENE.get(g)[i]));
     }
     const sparse = M.nsc_markers.filter(g => GENE.has(g) && idx.filter(i => GENE.get(g)[i] > 0).length < Math.max(5, idx.length * 0.02));
@@ -285,41 +289,64 @@ const Evidence = (() => {
     body().innerHTML = `<div class="ev-grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1.15fr) minmax(0,1fr)">
       <div class="ev-col"><div class="plot" id="rn0"></div><div class="plot" id="rn1"></div></div><div class="scrollbox" id="ev-rtable"></div>
       <div class="ev-col"><div class="legend" id="ev-rleg"></div><div class="plot" id="ev-rdepth"></div></div></div>`;
-    const si = S.focus, e = binEdges(-0.2, 1.0, 40);
-    SEC[si].scdeed.forEach((r, k) => histChart('rn' + k, { title: `${'AB'[k]} · min_dist ${r.min_dist}`, edges: e, density: true, xLabel: 'reliability (Pearson r)', xFmt: d3.format('.1f'),
+    const si = S.focus, e = binEdges(-0.2, 1.0, 40), whole = tissueMap(), mapName = whole ? ' · whole-tissue map' : '';
+    // histograms + cut-offs describe the whole embedding (scDEED is computed on all of its cells)
+    scdeedOf(si).forEach((r, k) => histChart('rn' + k, { title: `${'AB'[k]} · min_dist ${r.min_dist}${mapName}`, edges: e, density: true, xLabel: 'reliability (Pearson r)', xFmt: d3.format('.1f'),
       series: [{ counts: r.obs_hist, color: P.cat[0], label: 'Observed' }, { counts: r.null_hist, color: P.text2, kind: 'step', label: 'Shuffled null' }],
       vlines: [{ x: r.null_q05, label: 'dubious', color: P.crit }, { x: r.null_q95, label: 'trustworthy', color: P.text2, dy: 12 }] }));
-    const dg = Array.from(dgCells()), cls = k => C['cls' + k];
+    const cells = Array.from(umapCells(si)), cls = k => emb(k).cls, pres = k => emb(k).pres;
     const row = (label, idx, key, on) => {
       const n = idx.length, a = idx.filter(i => cls(0)[i] === 2).length, b = idx.filter(i => cls(1)[i] === 2).length;
-      const pa = d3.mean(idx, i => C.pres0[i]), pb = d3.mean(idx, i => C.pres1[i]);
+      const pa = d3.mean(idx, i => pres(0)[i]), pb = d3.mean(idx, i => pres(1)[i]);
       return `<tr class="${key != null ? 'click' : ''}${on ? ' on' : ''}" data-c="${key ?? ''}"><td>${label}</td><td class="num">${fmt.int(n)}</td>
         <td class="num">${a} <span class="muted">(${fmt.pct1(a / n)})</span></td><td class="num">${b} <span class="muted">(${fmt.pct1(b / n)})</span></td>
         <td class="num">${fmt.pct(pa)}</td><td class="num">${fmt.pct(pb)}</td></tr>`;
     };
-    let rows = d3.range(nClusters(si)).map(c => row(`${swatch(clusterColor(c))} Group ${c}`, dg.filter(i => C.leiden[i] === c), c, selIn(si) && S.sel.cluster === c)).join('');
-    rows += row('<b>All DG</b>', dg, null, false);
-    if (selIn(si)) rows += row('<b>Selection</b>', Array.from(S.sel.idx).filter(i => C.leiden[i] !== 255), null, true);
+    let rows;
+    if (!whole) {
+      rows = d3.range(nClusters(si)).map(c => row(`${swatch(clusterColor(c))} Group ${c}`, cells.filter(i => C.leiden[i] === c), c, selIn(si) && S.sel.cluster === c)).join('');
+      rows += row('<b>All DG</b>', cells, null, false);
+    } else {   // whole-tissue map: one row per region in scope
+      const regs = d3.range(REG.length).filter(j => cells.some(i => C.region[i] === j));
+      rows = regs.map(j => row(`${swatch(regionColor(j))} ${REG[j]}`, cells.filter(i => C.region[i] === j), j, false)).join('');
+      rows += row(`<b>All shown</b>`, cells, null, false);
+    }
+    if (selIn(si)) rows += row('<b>Selection</b>', Array.from(S.sel.idx).filter(i => cls(0)[i] !== 255), null, true);
     const t = document.getElementById('ev-rtable');
-    t.innerHTML = `<table class="t"><thead><tr><th>DG group</th><th class="num">Cells</th><th class="num">Dubious A</th><th class="num">Dubious B</th>
+    t.innerHTML = `<table class="t"><thead><tr><th>${whole ? 'Region' : 'DG group'}</th><th class="num">Cells</th><th class="num">Dubious A</th><th class="num">Dubious B</th>
       <th class="num" title="mean share of 15 PCA neighbours kept as UMAP neighbours">Nbrs kept A</th><th class="num">Nbrs kept B</th></tr></thead><tbody>${rows}</tbody></table>
-      <p class="note">"Dubious" flags a cell's position in the layout, not a bad cell. Small groups carry most dubious cells; check their story with the Lens.</p>`;
-    t.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => selectCluster(si, +tr.dataset.c));
+      <p class="note">"Dubious" flags a cell's position in the layout, not a bad cell. ${whole
+        ? 'Whole-tissue map: built from every cell of the section; rows compare how faithfully each region is placed. Click a row to select it.'
+        : 'Small groups carry most dubious cells; check their story with the Lens.'}</p>`;
+    t.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => {
+      const k = +tr.dataset.c;
+      if (!whole) return selectCluster(si, k);
+      setSelection(cells.filter(i => C.region[i] === k), `${SEC[si].name} · ${REG[k]}`, { byRegion: true });
+    });
     document.getElementById('ev-rleg').innerHTML = legendHTML([{ color: P.cat[0], label: `A · min_dist ${M.min_dists[0]}` }, { color: P.cat[1], label: `B · min_dist ${M.min_dists[1]}` }]);
+    // % dubious among the cells in scope (DG map: all DG cells; whole-tissue map: the regions shown)
+    const dubRate = (s, k) => {
+      const idx = umapCells(s.i), c = cls(k);
+      let d = 0;
+      for (const i of idx) if (c[i] === 2) d++;
+      return { d, n: idx.length, y: idx.length ? d / idx.length : NaN };
+    };
     if (singleSection()) {
       const host = document.getElementById('ev-rdepth');
       host.innerHTML = '<div class="plot" id="ev-r1"></div><div class="plot" id="ev-r2"></div>';
       host.style.display = 'flex'; host.style.flexDirection = 'column';
-      const sd = SEC[si].scdeed, bar = (k, v, tip) => ({ label: 'AB'[k], value: v, color: P.cat[k], tip });
-      barGroups('ev-r1', { title: `${SEC[si].name} · % dubious cells`, yFmt: d3.format('.1%'),
-        groups: [{ label: 'A vs B', bars: sd.map((r, k) => bar(k, r.dubious / r.n_cells, tipRows([['Dubious', `${r.dubious} of ${fmt.int(r.n_cells)}`]]))) }] });
-      barGroups('ev-r2', { title: 'median reliability', yFmt: d3.format('.2f'),
+      const sd = scdeedOf(si), bar = (k, v, tip) => ({ label: 'AB'[k], value: v, color: P.cat[k], tip });
+      barGroups('ev-r1', { title: `${SEC[si].name} · % dubious · ${umapScopeLabel()}`, yFmt: d3.format('.1%'),
+        groups: [{ label: 'A vs B', bars: [0, 1].map(k => { const r = dubRate(SEC[si], k); return bar(k, r.y, tipRows([['Dubious', `${r.d} of ${fmt.int(r.n)}`]])); }) }] });
+      barGroups('ev-r2', { title: `median reliability${mapName}`, yFmt: d3.format('.2f'),
         groups: [{ label: 'A vs B', bars: sd.map((r, k) => bar(k, r.median_reliability, tipRows([['Median reliability', fmt.f3(r.median_reliability)]]))) }] });
       return;
     }
-    depthLines('ev-rdepth', { title: '% dubious by section', yLabel: '% dubious', yFmt: d3.format('.1%'), focus: si, secs: shown(),
-      series: [0, 1].map(k => ({ label: 'AB'[k], color: P.cat[k], pts: shown().map(s => ({ si: s.i, y: s.scdeed[k].dubious / s.scdeed[k].n_cells,
-        tip: tipRows([['Dubious', `${s.scdeed[k].dubious} of ${fmt.int(s.scdeed[k].n_cells)}`], ['Median reliability', fmt.f3(s.scdeed[k].median_reliability)], ['Median counts', fmt.int(medCounts(s.i))]]) })) })) });
+    depthLines('ev-rdepth', { title: `% dubious by section · ${umapScopeLabel()}`, yLabel: '% dubious', yFmt: d3.format('.1%'), focus: si, secs: shown(),
+      series: [0, 1].map(k => ({ label: 'AB'[k], color: P.cat[k], pts: shown().map(s => {
+        const r = dubRate(s, k), sd = scdeedOf(s.i)[k];
+        return { si: s.i, y: r.y, tip: tipRows([['Dubious', `${r.d} of ${fmt.int(r.n)}`], ['Median reliability (map)', fmt.f3(sd.median_reliability)], ['Median counts', fmt.int(medCounts(s.i))]]) };
+      }) })) });
   }
 
   function render() {

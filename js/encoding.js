@@ -40,13 +40,13 @@ function encoding(key = S.color, k = S.layout) {
     withFailed: true, fn: i => (C.qc[i] ? P.cat[0] : P.crit), key: i => C.qc[i],
     legend: [{ k: 1, label: 'Kept', color: P.cat[0], click: true }, { k: 0, label: 'Removed by QC', color: P.crit, click: true }] };
   if (key === 'trust') {
-    const c = C['cls' + k];
+    const c = emb(k).cls;
     return { fn: i => (c[i] !== 255 ? clsColor(c[i]) : null), key: i => c[i], sort: i => c[i],
       legend: CLS.map((l, j) => ({ k: j, label: l, color: clsColor(j), click: true })),
-      note: `classes for layout ${'AB'[k]} (min_dist ${M.min_dists[k]})` };
+      note: `classes for layout ${'AB'[k]} (min_dist ${M.min_dists[k]}${tissueMap() ? ', whole-tissue map' : ''})` };
   }
   if (key === 'pres') {
-    const v = C['pres' + k];
+    const v = emb(k).pres;
     return { fn: i => (v[i] === v[i] ? rampAt(P.seq, v[i]) : null), sort: i => -v[i],
       legend: { ramp: P.seq, lo: '0', hi: '1', label: `share of 15 PCA neighbours that are also UMAP neighbours (layout ${'AB'[k]})` } };
   }
@@ -69,9 +69,20 @@ function paintColor(enc, i, { focusOnly = false } = {}) {
   if (enc.perSection && focusOnly && C.sec[i] !== S.focus) return P.bg;
   let c = enc.fn(i);
   if (c == null) return P.bg;
+  if (outOfRegionScope(i)) return P.faint;
   if (S.sel && C.sec[i] === S.sel.si && !isSel(i)) return P.faint;
   if (S.pick.size && enc.key && !S.pick.has(enc.key(i))) return P.faint;
   return c;
+}
+
+/* the legend categories currently shown, in the focus section, as a selection ("Select these cells") */
+function pickedSelection(enc) {
+  if (!S.pick.size || !enc.key) return null;
+  const pool = S.color === 'trust' || S.color === 'pres' ? umapCells(S.focus) : enc.perSection ? cellsOf(S.focus, 'dg') : cellsOf(S.focus, enc.withFailed ? 'all' : 'qc');
+  const idx = Array.from(pool).filter(i => S.pick.has(enc.key(i)));
+  const names = enc.legend.filter(d => S.pick.has(d.k)).map(d => d.label);
+  const meta = Object.assign({ byPick: S.color }, S.color === 'cluster' && S.pick.size === 1 ? { cluster: [...S.pick][0] } : {});
+  return makeSelection(idx, `${SEC[S.focus].name} · ${names.length > 3 ? names.length + ' categories' : names.join(' + ')}`, meta);
 }
 
 function encodingLegendHTML(enc) {

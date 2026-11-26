@@ -82,6 +82,7 @@ const S = {
   tour: true,                             // guided tour on (story card + step pills) or off (free exploration)
   step: 0,                                // guided-story step (story.js)
   view: 'section',                        // main viewer: 'section' | 'compare' (UMAP sensitivity) | 'grid'
+  uscope: 'dg',                           // UMAP of: 'dg' (DG-only map) | 'regions' (whole-tissue map, ticked regions) | 'all'
   color: 'region',                        // ONE encoding shared by 3D stack, tissue and UMAPs
   layout: 0,                              // UMAP layout used by the tissue map in the sensitivity view (0 = A)
   evid: 'data',                           // evidence panel tab
@@ -103,12 +104,68 @@ const S = {
   sel: null,                              // { mask: Uint8Array(N), n, label, si, idx, cluster }
 };
 
+/* two precomputed embeddings per section (precompute.py):
+   DG map    = built from the DG cells only (the DG groups, NSC niche and tour use it)
+   tissue map = built from every QC-pass cell, so the UMAP can show any set of regions; one fixed layout
+   per section, filtered to the regions in scope, so a cell keeps its position when regions change */
+const HAS_TISSUE = !!C.w0_1;
+const tissueMap = () => S.uscope !== 'dg' && HAS_TISSUE;
+function emb(k) {
+  return tissueMap()
+    ? { x: C[`w${k}_1`], y: C[`w${k}_2`], rel: C['wrel' + k], cls: C['wcls' + k], pres: C['wpres' + k] }
+    : { x: C[`u${k}_1`], y: C[`u${k}_2`], rel: C['rel' + k], cls: C['cls' + k], pres: C['pres' + k] };
+}
+const scdeedOf = si => (tissueMap() ? SEC[si].wscdeed : SEC[si].scdeed);
+const regionKey = () => [...S.regions].sort((a, b) => a - b).join(',');
+/* cells drawn in the UMAPs for the current scope */
+function umapCells(si) {
+  if (!tissueMap()) return cellsOf(si, 'dg');
+  if (S.uscope === 'all') return cellsOf(si, 'qc');
+  const key = si + '|reg|' + regionKey();
+  if (!_idx.has(key)) _idx.set(key, cellsOf(si, 'qc').filter(i => S.regions.has(C.region[i])));
+  return _idx.get(key);
+}
+/* 'Selected regions' also fades the other regions on the tissue map and the 3D stack */
+const outOfRegionScope = i => S.uscope === 'regions' && HAS_TISSUE && S.view !== 'grid' && !S.regions.has(C.region[i]);
+/* regions chosen on the tissue side (Region legend, lasso) -> the UMAP follows them.
+   The DG map cannot show other regions, so picking one switches to the whole-tissue map. */
+function regionScopePatch(regs) {
+  if (!HAS_TISSUE) return {};
+  if (!regs.size) return S.uscope === 'regions' ? { uscope: 'all' } : {};
+  if (S.uscope === 'all') return {};                                   // all regions stay drawn; the pick fades the rest
+  if (S.uscope === 'dg' && [...regs].every(r => r === DG)) return {};  // DG only: the DG map already shows them
+  return { uscope: 'regions', regions: new Set(regs) };
+}
+function followSelectionRegions(idx) {
+  if (!HAS_TISSUE || S.uscope !== 'dg' || !idx.length) return;
+  const regs = new Set(Array.from(idx, i => C.region[i]));
+  if ([...regs].some(r => r !== DG)) update({ uscope: 'regions', regions: regs });
+}
+/* the region chips / sidebar list changed: keep a Region-legend pick identical to them */
+function regionsPatch(rs) {
+  const patch = { regions: rs };
+  if (S.color === 'region' && S.pick.size) patch.pick = new Set(rs);
+  return patch;
+}
+function umapScopeLabel() {
+  if (!tissueMap()) return 'DG';
+  if (S.uscope === 'all') return 'all regions';
+  const r = REG.filter((_, j) => S.regions.has(j));
+  return r.length ? r.join(' + ') : 'no region selected';
+}
+
 /* neighbour graphs exported by precompute.py */
 const KL = M.k_lens || 15, KS = M.k_spatial || 10;
 function pcaNeighbours(i) {
+  if (tissueMap()) {
+    if (!C.wpknn || C.wpknn[i * KL] === 65535) return [];
+    const s = SEC[C.sec[i]].start;
+    return Array.from(C.wpknn.subarray(i * KL, i * KL + KL), v => s + v);
+  }
   const r = C.dgrow ? C.dgrow[i] : -1;
   return r < 0 ? [] : Array.from(C.pknn.subarray(r * KL, r * KL + KL));
 }
+const hasLens = i => i >= 0 && (tissueMap() ? !!C.wpknn && C.wpknn[i * KL] !== 65535 : !!C.dgrow && C.dgrow[i] >= 0);
 /* embedding-quality information (scDEED, lens) lives only in the UMAP sensitivity view */
 const sensOn = () => S.view === 'compare';
 /* sections in scope, in depth order; single-section view when there is exactly one */
@@ -128,7 +185,7 @@ let _raf = 0;
 const _renderers = [];
 function onRender(fn) { _renderers.push(fn); }
 function update(patch) {
-  if (patch) Object.assign(S, patch);
+  if (patch) { Object.assign(S, patch); if (!('sel' in patch)) followShown(patch); }
   if (_raf) return;
   _raf = 1;
   // rAF for smooth updates; the timeout fallback keeps rendering when the tab is hidden (rAF is paused there)
@@ -138,12 +195,23 @@ function update(patch) {
 }
 
 /* selection shared by every linked view */
-function setSelection(indices, label, meta = {}) {
-  if (!indices || !indices.length) { S.sel = null; update(); return; }
+function makeSelection(indices, label, meta = {}) {
+  if (!indices || !indices.length) return null;
   const mask = new Uint8Array(N);
   for (const i of indices) mask[i] = 1;
-  S.sel = { mask, n: indices.length, label, si: C.sec[indices[0]], idx: Int32Array.from(indices), cluster: null, ...meta };
-  update();
+  return { mask, n: indices.length, label, si: C.sec[indices[0]], idx: Int32Array.from(indices), cluster: null, ...meta };
+}
+function setSelection(indices, label, meta = {}) { S.sel = makeSelection(indices, label, meta); update(); }
+/* A selection made from the legend ("Select these cells": meta byPick = the colour it was made with) or from a
+   region row (byRegion) describes what is shown, so it follows later changes instead of fading cells the user
+   has just asked to see. Lasso and group selections are explicit cell sets and stay as they are. */
+function followShown(patch) {
+  const s = S.sel;
+  if (!s) return;
+  if (s.byPick != null) {
+    if (S.color !== s.byPick) { s.byPick = null; return; }   // new colour: keep these cells as a plain selection
+    if (['pick', 'focus', 'uscope', 'regions'].some(k => k in patch)) S.sel = pickedSelection(encoding());
+  } else if (s.byRegion && ('regions' in patch || 'uscope' in patch || 'focus' in patch)) S.sel = null;
 }
 function selectCluster(si, c) {
   const idx = cellsOf(si, 'dg').filter(i => C.leiden[i] === c);

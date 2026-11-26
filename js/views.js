@@ -8,14 +8,14 @@ const Views = (() => {
 
   /* ---------------- linked hover + neighbour lens */
   function hover(i, ev) {
-    const lensOn = sensOn() && S.lens && i >= 0 && C.dgrow && C.dgrow[i] >= 0;
+    const lensOn = sensOn() && S.lens && hasLens(i);
     const nb = lensOn ? pcaNeighbours(i) : [];
     for (const v of [tissue, ua, ub]) if (v) (lensOn ? v.lens(i, nb, { spokes: v !== tissue }) : v.highlight(i));
     if (stack) stack.highlight(i);
     lensReadout(i, nb);
     if (i < 0) return hideTip();
     const rows = [['NSC score', fmt.f2(nscScore()[i])]];
-    if (sensOn() && C.leiden[i] !== 255) M.min_dists.forEach((m, k) => rows.push([`Layout ${'AB'[k]}`, `${CLS[C['cls' + k][i]]} · r ${fmt.f2(C['rel' + k][i])}`]));
+    if (sensOn()) M.min_dists.forEach((m, k) => { const e = emb(k); if (e.cls[i] !== 255) rows.push([`Layout ${'AB'[k]}`, `${CLS[e.cls[i]]} · r ${fmt.f2(e.rel[i])}`]); });
     if (S.color.startsWith('gene:') && GENE.has(S.color.slice(5))) rows.push([S.color.slice(5), fmt.f2(GENE.get(S.color.slice(5))[i]) + ' log1p']);
     showTip(ev, cellTip(i, rows));
   }
@@ -23,10 +23,10 @@ const Views = (() => {
     const el = document.getElementById('lens-readout');
     el.hidden = !(sensOn() && S.lens);
     if (el.hidden) return;
-    if (i < 0 || !nb.length) { el.innerHTML = `<b>Lens on</b> · hover a DG cell to see its ${KL} nearest neighbours in PCA space (rings + spokes)`; return; }
-    const kept = M.min_dists.map((m, k) => Math.round(C['pres' + k][i] * KL));
+    if (i < 0 || !nb.length) { el.innerHTML = `<b>Lens on</b> · hover a cell in the UMAP to see its ${KL} nearest neighbours in PCA space (rings + spokes)`; return; }
+    const kept = M.min_dists.map((m, k) => Math.round(emb(k).pres[i] * KL));
     const dsp = median(nb.map(j => Math.hypot(C.x[j] - C.x[i], C.y[j] - C.y[i])));
-    const spread = k => median(nb.map(j => Math.hypot(C[`u${k}_1`][j] - C[`u${k}_1`][i], C[`u${k}_2`][j] - C[`u${k}_2`][i])));
+    const spread = k => { const e = emb(k); return median(nb.map(j => Math.hypot(e.x[j] - e.x[i], e.y[j] - e.y[i]))); };
     el.innerHTML = `<b>Lens</b> · of ${KL} PCA neighbours, <b>${kept[0]}</b> stay nearest in layout A and <b>${kept[1]}</b> in B ·
       median UMAP distance A ${fmt.f2(spread(0))}, B ${fmt.f2(spread(1))} · median tissue distance ${fmt.um(dsp)}`;
   }
@@ -43,7 +43,7 @@ const Views = (() => {
     sc.dots(front, i => paintColor(enc, i), r * (S.sel || S.pick.size ? 1.25 : 1));
   }
   function trustRings(sc, idx, k) {
-    const c = C['cls' + k], dub = [];
+    const c = emb(k).cls, dub = [];
     for (const i of idx) if (c[i] === 2) dub.push(i);
     sc.dots(dub, 'none', 3.6, { stroke: P.crit, lw: 1.6 });
   }
@@ -73,25 +73,28 @@ const Views = (() => {
     return out;
   }
 
-  /* turn the legend categories currently shown into a selection (focus section) */
+  /* turn the legend categories currently shown into a selection (focus section); it keeps following the legend */
   function selectPicked(enc) {
-    if (!S.pick.size || !enc.key) return;
-    const pool = enc.perSection || S.color === 'trust' || S.color === 'pres' ? cellsOf(S.focus, 'dg') : cellsOf(S.focus, enc.withFailed ? 'all' : 'qc');
-    const idx = Array.from(pool).filter(i => S.pick.has(enc.key(i)));
-    const names = enc.legend.filter(d => S.pick.has(d.k)).map(d => d.label);
-    const meta = S.color === 'cluster' && S.pick.size === 1 ? { cluster: [...S.pick][0] } : {};
-    setSelection(idx, `${SEC[S.focus].name} · ${names.length > 3 ? names.length + ' categories' : names.join(' + ')}`, meta);
+    if (S.pick.size && enc.key) update({ sel: pickedSelection(enc) });
+  }
+  /* "· N selected" in a view subtitle, so faded cells are explained where they are faded */
+  function selNote(si, cells) {
+    if (!selIn(si)) return '';
+    let n = 0;
+    for (const i of cells) if (S.sel.mask[i]) n++;
+    return ` · ${fmt.int(n)} selected`;
   }
 
   /* ---------------- construction */
   function init() {
     const mkScatter = (id, opts) => new Scatter(document.getElementById(id), Object.assign({ lasso: true, zoom: true, zoomGrow: true, onHover: hover }, opts));
     tissue = mkScatter('v-tissue', { r: 1.3,
-      onLasso: idx => setSelection(idx, `${idx.length} cells lassoed in tissue`),
+      onLasso: idx => { setSelection(idx, `${idx.length} cells lassoed in tissue`); followSelectionRegions(idx); },
       onClick: i => { if (i < 0) clearSelection(); else if (C.leiden[i] !== 255 && S.color === 'cluster') selectCluster(S.focus, C.leiden[i]); } });
     const umapOpts = k => ({ r: 1.7, equal: false,
       onLasso: idx => setSelection(idx, `${idx.length} cells lassoed in UMAP ${'AB'[k]}`),
-      onClick: i => (i >= 0 ? selectCluster(S.focus, C.leiden[i]) : clearSelection()) });
+      // the DG map: a click selects the cell's DG group; the whole-tissue map does so only when colouring by DG group
+      onClick: i => { if (i < 0) clearSelection(); else if (C.leiden[i] !== 255 && (!tissueMap() || S.color === 'cluster')) selectCluster(S.focus, C.leiden[i]); } });
     ua = mkScatter('v-umapA', umapOpts(0));
     ub = mkScatter('v-umapB', umapOpts(1));
     scatterTools('v-tissue', tissue, { extra: [['DG', 'Zoom to the dentate gyrus', () => tissue.zoomTo(cellsOf(S.focus, 'dg'))]] });
@@ -109,6 +112,9 @@ const Views = (() => {
     document.getElementById('mv-color').onchange = async e => { const v = e.target.value; if (v.startsWith('gene:')) await loadGene(v.slice(5)); update({ color: v, pick: new Set() }); };
     for (const [id, k] of [['t-trust', 'trust'], ['t-lens', 'lens'], ['t-links', 'links']])
       document.getElementById(id).onclick = () => update({ [k]: !S[k] });
+    // "Selected regions" starts from the regions picked in the Region legend, if any
+    document.querySelectorAll('#mv-uscope button').forEach(b => b.onclick = () => update(
+      Object.assign({ uscope: b.dataset.u }, b.dataset.u === 'regions' && S.color === 'region' && S.pick.size ? { regions: new Set(S.pick) } : {})));
     document.querySelectorAll('#stack-spacing button').forEach(b => b.onclick = () => { stack.setSpacing(b.dataset.v); stackKey = ''; update(); });
     const views = { oblique: [-14, 50], side: [0, 6], top: [0, 90] };
     document.querySelectorAll('[data-sview]').forEach(b => b.onclick = () => stack.setView(...views[b.dataset.sview]));
@@ -127,12 +133,32 @@ const Views = (() => {
     const lg = document.getElementById('mv-legend');
     lg.innerHTML = (S.view === 'grid' ? '<span class="it muted">colour applies to the 3D stack ·</span>' : '') + encodingLegendHTML(enc) +
       (sensOn() && S.trust ? `<span class="it"><span class="sw" style="border:1.6px solid ${P.crit};background:none"></span>dubious position (scDEED)</span>` : '');
+    // Region legend = choosing regions: the UMAP follows (switching to the whole-tissue map when needed)
+    const regionPatch = pick => (S.color === 'region' ? regionScopePatch(pick) : {});
     lg.querySelectorAll('.it.click').forEach(it => it.onclick = () => {
       const k = +it.dataset.k, pick = new Set(S.pick);
       pick.has(k) ? pick.delete(k) : pick.add(k);
-      update({ pick });
+      update(Object.assign({ pick }, regionPatch(pick)));
     });
-    lg.querySelectorAll('.legbtn').forEach(b => b.onclick = () => (b.dataset.act === 'all' ? update({ pick: new Set() }) : selectPicked(enc)));
+    lg.querySelectorAll('.legbtn').forEach(b => b.onclick = () => (b.dataset.act === 'all'
+      ? update(Object.assign({ pick: new Set() }, regionPatch(new Set()))) : selectPicked(enc)));
+    // UMAP scope: DG map, or the whole-tissue map filtered to the chosen regions / all regions
+    const bar = document.getElementById('mv-ubar');
+    bar.style.display = S.view !== 'grid' && HAS_TISSUE ? '' : 'none';
+    document.querySelectorAll('#mv-uscope button').forEach(b => b.classList.toggle('on', b.dataset.u === S.uscope));
+    const chips = document.getElementById('mv-regions');
+    chips.style.display = S.uscope === 'regions' ? '' : 'none';
+    if (S.uscope === 'regions') {
+      const qc = cellsOf(S.focus, 'qc'), n = new Array(REG.length).fill(0);
+      for (const i of qc) n[C.region[i]]++;
+      chips.innerHTML = REG.map((r, j) => n[j] ? `<span class="chip${S.regions.has(j) ? ' on' : ''}" data-r="${j}" title="Show / hide ${r} in the UMAP">
+        <span class="sw" style="background:${regionColor(j)}"></span>${r} <span class="n">${fmt.int(n[j])}</span></span>` : '').join('');
+      chips.querySelectorAll('.chip').forEach(c => c.onclick = () => {
+        const rs = new Set(S.regions), j = +c.dataset.r;
+        rs.has(j) ? rs.delete(j) : rs.add(j);
+        update(regionsPatch(rs));
+      });
+    }
     const cells = { tissue: 'mv-tissue', A: 'mv-umapA', B: 'mv-umapB', grid: 'mv-grid' };
     const show = S.view === 'grid' ? ['grid'] : S.view === 'compare' ? ['tissue', 'A', 'B'] : ['tissue', 'A'];
     for (const [k, id] of Object.entries(cells)) document.getElementById(id).style.display = show.includes(k) ? '' : 'none';
@@ -149,7 +175,7 @@ const Views = (() => {
     const linksOn = S.links && S.view === 'section', links = linksOn ? nearestLinks(coi.idx) : [];
     tissue.draw(sc => {
       paint(sc, idx, enc, 1.3);
-      if (sensOn() && S.trust) trustRings(sc, cellsOf(si, 'dg'), 0);
+      if (sensOn() && S.trust) trustRings(sc, umapCells(si), 0);
       if (links.length) {
         sc.segments(links, P.text2, 0.8);
         sc.dots([...new Set(links.map(l => l[1]))], 'none', 2.6, { stroke: broadColor(S.ref), lw: 1.4 });
@@ -158,26 +184,35 @@ const Views = (() => {
     }, (sc, g) => {
       for (const r of regionLabels(si)) g.append('text').attr('class', 'region').attr('x', sc.pxv(r.x)).attr('y', sc.pyv(r.y)).attr('text-anchor', 'middle').text(REG[r.r]);
     });
-    document.getElementById('mv-tissue-sub').textContent = `${SEC[si].name} · ${fmt.f2(SEC[si].depth_mm)} mm` +
+    document.getElementById('mv-tissue-sub').textContent = `${SEC[si].name} · ${fmt.f2(SEC[si].depth_mm)} mm` + selNote(si, tissue.idx) +
       (linksOn ? ` · ${links.length ? links.length + ' links to nearest ' + BROAD[S.ref].toLowerCase() : 'links hidden (> 400 cells)'}` : '');
   }
   function drawUmap(k, enc) {
-    const si = S.focus, u = umap(k), dg = cellsOf(si, 'dg');
-    if (u._si !== si) { u.setPoints(C[`u${k}_1`], C[`u${k}_2`], dg); u._si = si; }
-    u.hoverIdx = dg; u.selectIdx = dg;
-    const idx = ordered(dg, enc);
-    u.draw(sc => { paint(sc, idx, enc, 1.7); if (sensOn() && S.trust) trustRings(sc, dg, k); }, (sc, g) => {
+    const si = S.focus, u = umap(k), e = emb(k), cells = umapCells(si), whole = tissueMap();
+    // the whole-tissue map keeps the frame of all its cells, so positions stay put when regions are added or removed
+    const key = [si, whole ? 'tissue' : 'dg', S.uscope === 'regions' ? regionKey() : ''].join('|');
+    if (u._k !== key) { u.setPoints(e.x, e.y, cells, whole ? cellsOf(si, 'qc') : cells); u._k = key; }
+    u.hoverIdx = cells; u.selectIdx = cells;
+    const idx = ordered(cells, enc);
+    u.draw(sc => { paint(sc, idx, enc, whole ? 1.3 : 1.7); if (sensOn() && S.trust) trustRings(sc, cells, k); }, (sc, g) => {
+      if (!cells.length) {
+        g.append('text').attr('class', 'lbl').attr('x', sc.w / 2).attr('y', sc.h / 2).attr('text-anchor', 'middle').text('Tick at least one region above');
+        return;
+      }
       if (S.color !== 'cluster') return;
       for (let c = 0; c < nClusters(si); c++) {
-        const ids = Array.from(dg).filter(i => C.leiden[i] === c);
-        if (ids.length) g.append('text').attr('x', d3.median(ids, i => sc.px(i))).attr('y', d3.median(ids, i => sc.py(i)))
+        const ids = Array.from(cells).filter(i => C.leiden[i] === c);
+        if (ids.length >= 20) g.append('text').attr('x', d3.median(ids, i => sc.px(i))).attr('y', d3.median(ids, i => sc.py(i)))
           .attr('text-anchor', 'middle').attr('font-weight', 700).text(c);
       }
     });
-    const r = SEC[si].scdeed[k];
-    document.getElementById(`mv-umap${'AB'[k]}-sub`).innerHTML = sensOn()
-      ? `min_dist ${r.min_dist} · <b style="color:${P.crit}">${r.dubious} dubious</b> of ${fmt.int(dg.length)}`
-      : `${SEC[si].name} · ${fmt.int(dg.length)} DG cells`;
+    let dub = 0;
+    for (const i of cells) if (e.cls[i] === 2) dub++;
+    const scope = umapScopeLabel(), sub = document.getElementById(`mv-umap${'AB'[k]}-sub`);
+    sub.innerHTML = sensOn()
+      ? `min_dist ${M.min_dists[k]} · <b style="color:${P.crit}">${dub} dubious</b> of ${fmt.int(cells.length)}`
+      : `${SEC[si].name} · ${scope} · ${fmt.int(cells.length)} cells${selNote(si, cells)}`;
+    sub.title = `${SEC[si].name} · ${scope} · ${fmt.int(cells.length)} cells · ${whole ? 'whole-tissue map (built from all cells of the section)' : 'DG map (built from DG cells only)'}`;
   }
 
   /* ---------------- 3D stack */
@@ -193,7 +228,8 @@ const Views = (() => {
     }
     document.querySelector('#p-stack h3').textContent = stack._single ? `Section ${scope[0].name}` : `Sections in 3D (${scope.length})`;
     document.getElementById('stack-spacing').style.display = stack._single ? 'none' : '';
-    const key = [S.color, S.focus, [...S.pick].join(), S.sel ? S.sel.label + S.sel.n : '', [...S.nsc].join(), S.nscThr, P.surface, scopeKey].join('|');
+    const key = [S.color, S.focus, [...S.pick].join(), S.sel ? S.sel.label + S.sel.n : '', [...S.nsc].join(), S.nscThr, P.surface, scopeKey,
+      S.uscope === 'regions' ? regionKey() : S.uscope].join('|');
     document.querySelectorAll('#stack-spacing button').forEach(b => b.classList.toggle('on', b.dataset.v === stack.spacing));
     if (key === stackKey) return;
     stackKey = key;
